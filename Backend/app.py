@@ -47,6 +47,7 @@ async def detect_video(file: UploadFile = File(...)):
 
     cap = cv2.VideoCapture(tmp_path)
     if not cap.isOpened():
+        os.unlink(tmp_path)  # Clean up input file
         raise HTTPException(status_code=500, detail="Could not open video")
 
     # Define codec and create VideoWriter object
@@ -58,27 +59,31 @@ async def detect_video(file: UploadFile = File(...)):
     output_path = tempfile.mktemp(suffix='.mp4')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        # Run YOLO inference
-        results = model(frame)
-        annotated_frame = results[0].plot()  # Draws boxes and labels
+            # Run YOLO inference
+            results = model(frame)
+            annotated_frame = results[0].plot()  # Draws boxes and labels
 
-        out.write(annotated_frame)
+            out.write(annotated_frame)
+    finally:
+        cap.release()
+        out.release()
+        os.unlink(tmp_path)  # Clean up input file
 
-    cap.release()
-    out.release()
-
-    # Return video file
+    # Create a generator that cleans up after streaming
     def iterfile():
-        with open(output_path, mode="rb") as f:
-            yield from f
-
-    os.unlink(tmp_path)
-    os.unlink(output_path)
+        try:
+            with open(output_path, mode="rb") as f:
+                yield from f
+        finally:
+            # Clean up output file after streaming is complete
+            if os.path.exists(output_path):
+                os.unlink(output_path)
 
     return StreamingResponse(iterfile(), media_type="video/mp4")
 
