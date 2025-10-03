@@ -19,14 +19,14 @@ app = FastAPI(
 # Allow CORS (for React frontend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Load best model
-MODEL_PATH = "Backend/models/best.pt"
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "best.pt")
 if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(f"Model {MODEL_PATH} not found!")
 model = YOLO(MODEL_PATH)
@@ -50,30 +50,67 @@ async def detect_video(file: UploadFile = File(...)):
         os.unlink(tmp_path)  # Clean up input file
         raise HTTPException(status_code=500, detail="Could not open video")
 
-    # Define codec and create VideoWriter object
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    # Get video properties
     fps = int(cap.get(cv2.CAP_PROP_FPS))
+    if fps == 0 or fps > 60:
+        fps = 30  # Default to 30 fps if cannot be determined or too high
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    # Define output with X264 codec for better browser support
     output_path = tempfile.mktemp(suffix='.mp4')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    # Try X264 first, fall back to mp4v
+    codecs_to_try = ['X264', 'x264', 'H264', 'h264', 'mp4v', 'MP4V']
+    out = None
+    working_codec = None
+    
+    for codec in codecs_to_try:
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*codec)
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            if out.isOpened():
+                working_codec = codec
+                break
+            out.release()
+        except:
+            continue
+    
+    if out is None or not out.isOpened():
+        cap.release()
+        os.unlink(tmp_path)
+        raise HTTPException(status_code=500, detail="Could not create output video writer with any codec")
 
     try:
+        frame_count = 0
+        
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
 
-            # Run YOLO inference
-            results = model(frame)
+            # Run YOLO inference on every frame with lower confidence threshold
+            # conf=0.15 means it will detect objects with 15% confidence or higher
+            # imgsz=640 sets the inference size for better detection
+            results = model(frame, conf=0.15, iou=0.4, imgsz=640)
             annotated_frame = results[0].plot()  # Draws boxes and labels
 
             out.write(annotated_frame)
+            frame_count += 1
     finally:
         cap.release()
         out.release()
         os.unlink(tmp_path)  # Clean up input file
+
+    # Check if output file was created and has content
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        if os.path.exists(output_path):
+            os.unlink(output_path)
+        raise HTTPException(status_code=500, detail="Failed to create output video")
+    
+    print(f"Video created successfully: {frame_count} frames processed, codec: {working_codec}, size: {os.path.getsize(output_path)} bytes")
+
+    media_type = "video/mp4"
 
     # Create a generator that cleans up after streaming
     def iterfile():
@@ -85,7 +122,14 @@ async def detect_video(file: UploadFile = File(...)):
             if os.path.exists(output_path):
                 os.unlink(output_path)
 
-    return StreamingResponse(iterfile(), media_type="video/mp4")
+    return StreamingResponse(
+        iterfile(), 
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"inline; filename=detected_video.mp4",
+            "Accept-Ranges": "bytes"
+        }
+    )
 
 
 @app.post("/detect/image")
@@ -97,7 +141,8 @@ async def detect_image(file: UploadFile = File(...)):
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-    results = model(img)
+    # Run detection with lower confidence threshold for better detection
+    results = model(img, conf=0.15, iou=0.4, imgsz=640)
     annotated_img = results[0].plot()
 
     # Convert back to JPEG
@@ -112,7 +157,8 @@ async def detect_webcam_frame(file: UploadFile = File(...)):
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-    results = model(img)
+    # Run detection with lower confidence threshold
+    results = model(img, conf=0.15, iou=0.4, imgsz=640)
     detections = []
 
     for box in results[0].boxes:
