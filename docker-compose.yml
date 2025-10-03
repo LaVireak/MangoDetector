@@ -10,20 +10,13 @@ services:
       - "8000:8000"
     volumes:
       - ./Backend/models:/app/models
-      - ./Backend/uploads:/app/uploads
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
 
   frontend:
     build:
-      context: ./project/frontend
+      context: ./Frontend  # Changed from ./project/frontend
       dockerfile: Dockerfile
     container_name: mango-detection-frontend
     ports:
