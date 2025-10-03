@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: mango-detection-api
+    runtime: docker
+    dockerfilePath: ./Backend/Dockerfile
+    dockerContext: ./Backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8000
